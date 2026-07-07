@@ -1,0 +1,33 @@
+worker_processes 1;
+pid /run/nginx.pid;
+
+events { worker_connections 256; }
+
+http {
+  access_log off;
+  client_max_body_size 8m;
+
+  server {
+    listen 8080;
+
+    # OTLP/HTTP ingest -> collector. Only /v1/* is telemetry; everything else
+    # is the Grafana UI. This is the single-port mux that lets the whole stack
+    # ride one exposed sandbox port.
+    location /v1/ {
+      ${OTLP_AUTH_CHECK}
+      proxy_pass http://127.0.0.1:4318;
+      proxy_set_header Host $host;
+    }
+
+    location / {
+      proxy_pass http://127.0.0.1:3000;
+      proxy_set_header Host $host;
+      proxy_set_header X-Forwarded-Proto $scheme;
+      # Grafana Live (websocket); harmless if the fronting tunnel is HTTP/1.1-only —
+      # Grafana falls back to polling.
+      proxy_http_version 1.1;
+      proxy_set_header Upgrade $http_upgrade;
+      proxy_set_header Connection $http_connection;
+    }
+  }
+}

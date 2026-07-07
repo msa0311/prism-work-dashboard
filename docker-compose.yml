@@ -1,0 +1,15 @@
+services:
+  prism-work-dashboard:
+    build: .
+    image: prism-work-dashboard:local
+    ports:
+      - "8080:8080"
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+    # environment:
+    #   OTLP_AUTH_TOKEN: change-me          # require X-Otlp-Token on /v1/* ingest
+    #   GF_SECURITY_ADMIN_PASSWORD: change-me
+    #   GF_AUTH_ANONYMOUS_ENABLED: "false"  # default: anonymous Viewer enabled
+
+volumes:
+  clickhouse-data:
