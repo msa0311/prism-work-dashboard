@@ -81,18 +81,90 @@ execute them. Human operators can do the same through the API/UI.
    Opening it in a browser shows the Grafana **Agent Work** dashboard (with
    `auth: private`, the platform sends browsers through the OIDC login first).
 
-4. **Tell the user what remains on their side** (the platform pieces an agent
-   must not guess at):
-   - **Egress policy**: every agent that should report work needs the dashboard
-     hostname allowed in its sandbox egress policy.
-   - **Auth**: with `auth: private`, senders need a **Nexus API token** as
-     `Authorization: Bearer <token>` (the platform's edge authenticates and
-     forwards). With `auth: public`, set the `OTLP_AUTH_TOKEN` env on the
-     sandbox instead and senders add `X-Otlp-Token: <token>`.
-   - **Point the agents at it**: on each agent, the
-     [prism-work-telemetry](https://github.com/msa0311/prism-work-telemetry)
-     skill's `/data/work-telemetry/config.json` gets
-     `{"endpoint":"https://<slug>.<host>","headers":{"Authorization":"Bearer <token>"}}`.
+4. **Wire each reporting agent to the dashboard.** This is the platform setup an
+   agent must not guess at — run it once per reporting agent. You need the
+   dashboard host `<dash-host>` = `<sandbox-slug>.<SANDBOX_INGRESS_HOST>` from
+   step 3, plus the reporting agent's own `projectId` and `sandboxId`.
+
+   **a. Mint a token** — `create_api_token { orgId, name, expiresInDays }`.
+   Capture the returned `token`; it is shown only once.
+
+   **b. Give the token access to the reporting agent's project — via a team.**
+   This is the step that trips people up: the `auth: private` ingress authorizes
+   the Bearer by checking whether the token can reach *its own* project, and a
+   token gains project access **only** by being a member of a team that has that
+   access — there is no direct token→project grant.
+   - `list_teams { orgId }` and pick a team whose `projectAccess` includes the
+     project (or `create_team` then `set_team_project_access { role: "MEMBER" }`).
+   - `add_team_member { teamId, memberType: "AGENT", apiTokenId }`.
+
+   **c. Store the token as an injecting credential** in the reporting agent's
+   project — so the secret never has to live in the agent's writable
+   `config.json`:
+
+```json
+{
+  "tool": "create_credential",
+  "arguments": {
+    "projectId": "<projectId>",
+    "name": "work-dashboard-otlp",
+    "value": "<token from step a>",
+    "injections": [
+      {
+        "domain": "<dash-host>",
+        "headerName": "Authorization",
+        "headerFormat": "Bearer {value}",
+        "rules": [
+          { "path": "/v1/logs", "method": "POST" },
+          { "path": "/v1/**", "method": "POST" }
+        ]
+      }
+    ]
+  }
+}
+```
+
+   **d. Create the egress policy** — it both allows the ingest host and pulls in
+   the credential so the proxy injects the token:
+
+```json
+{
+  "tool": "create_policy",
+  "arguments": {
+    "projectId": "<projectId>",
+    "name": "work-dashboard-otlp-egress",
+    "allowedDomains": [
+      {
+        "pattern": "<dash-host>",
+        "verdict": "allow",
+        "transport": "direct",
+        "rules": [
+          { "path": "/v1/logs", "method": "POST" },
+          { "path": "/v1/**", "method": "POST" }
+        ]
+      }
+    ],
+    "credentials": [{ "credentialName": "work-dashboard-otlp" }]
+  }
+}
+```
+
+   **e. Attach the policy to the reporting agent's sandbox** (metadata only — no
+   restart): read the current `policyIds` with `get_sandbox`, then
+   `update_sandbox { policies: [...existing, <newPolicyId>] }`. Attach it to the
+   **reporting agent's** sandbox, not the dashboard's.
+
+   **f. Point the skill at the endpoint — with no auth header.** The
+   [prism-work-telemetry](https://github.com/msa0311/prism-work-telemetry)
+   skill's `/data/work-telemetry/config.json` gets just
+   `{"endpoint":"https://<dash-host>"}`. The egress proxy injects `Authorization`
+   for you; setting it in `config.json` too sends the header twice. (Prefer this
+   over `auth: public` + `OTLP_AUTH_TOKEN`, which puts a shared secret in the
+   sandbox env and in every sender's headers.)
+
+   **Verify:** emit one work record (or a single `POST /v1/logs` from the
+   reporting sandbox) and confirm a 2xx plus a new row on the **Agent Work**
+   dashboard.
 
 ### Sandbox sizing caveats
 
