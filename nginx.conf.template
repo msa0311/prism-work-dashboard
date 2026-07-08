@@ -10,6 +10,15 @@ http {
   server {
     listen 8080;
 
+    # The Lens agents sandbox ingress (nexus tunnel-proxy) forwards response
+    # bytes verbatim after the header block — it has no chunked-body parser,
+    # and EOF is its only body-end signal. A chunked response therefore leaks
+    # its framing bytes into the content (browser: ERR_CONTENT_DECODING_FAILED).
+    # Never emit chunked: unknown-length responses are close-delimited instead,
+    # which the tunnel handles correctly (it forces Connection: close anyway).
+    chunked_transfer_encoding off;
+    gzip off;
+
     # OTLP/HTTP ingest -> collector. Only /v1/* is telemetry; everything else
     # is the Grafana UI. This is the single-port mux that lets the whole stack
     # ride one exposed sandbox port.
